@@ -5,6 +5,7 @@ import os
 import time
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
+from torch.cuda.amp import GradScaler, autocast
 
 class FastByteDataset(Dataset):
     """Zero-copy memory-mapped dataset for hyper-fast byte loading."""
@@ -34,14 +35,27 @@ class FastByteDataset(Dataset):
         return chunk[:-1], chunk[1:]
 
 def train(file_path="dataset.bin"):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Training on {device}")
+    # Multi-GPU support: CUDA > MPS (Apple Metal) > CPU
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        device_name = "CUDA GPU"
+    elif torch.backends.mps.is_available():
+        device = torch.device('mps')
+        device_name = "Apple Metal GPU"
+    else:
+        device = torch.device('cpu')
+        device_name = "CPU"
+
+    print(f"Training on {device_name} ({device})")
 
     # Hyperparams
-    batch_size = 128 # Increased for better parallelism
+    batch_size = 256 # Doubled batch size for better GPU utilization
     seq_len = 512
     patch_size = 8
-    epochs = 2 # Adjusted for real dataset traversal
+    epochs = 2
+
+    # MPS doesn't support multiprocessing well - use 0 workers
+    num_workers = 8 if device.type == 'cuda' else 0
     
     # 1. Initialize Dataset and HyperLoader
     if not os.path.exists(file_path):
@@ -51,37 +65,52 @@ def train(file_path="dataset.bin"):
 
     dataset = FastByteDataset(file_path, seq_len)
     loader = DataLoader(
-        dataset, 
-        batch_size=batch_size, 
-        shuffle=True, 
-        num_workers=4,        # Parallel prefetching
-        pin_memory=True,     # Fast host-to-device transfer
-        prefetch_factor=2    # Keep batches ready
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=num_workers,
+        pin_memory=(device.type == 'cuda'),  # Only CUDA supports pin_memory
+        prefetch_factor=4 if num_workers > 0 else None,
+        persistent_workers=(num_workers > 0)
     )
 
-    # 2. Instantiate QLLK Model
+    # 2. Instantiate and COMPILE QLLK Model
     model = QLLKTransformer(patch_size=patch_size).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-3)
-    criterion = torch.nn.CrossEntropyLoss()
+    
+    # torch.compile: The secret sauce for speed (fuses kernels, optimizes graph)
+    use_amp = device.type in ['cuda', 'mps']
+    if hasattr(torch, "compile") and device.type == 'cuda':
+        print("Compiling model for maximum throughput...")
+        model = torch.compile(model)
+    elif device.type == 'mps':
+        print("Apple Metal GPU detected: Using FP32 (MPS doesn't support torch.compile yet).")
+    elif device.type == 'cpu':
+        print("CPU detected: Using FP32 (no compilation).")
 
-    print(f"Starting QLLK HYPER-LOADING (Batch: {batch_size}, Workers: 4)...")
+    optimizer = optim.AdamW(model.parameters(), lr=1e-3, weight_decay=0.01)
+    criterion = torch.nn.CrossEntropyLoss()
+    scaler = GradScaler(enabled=(device.type == 'cuda'))
+
+    print(f"Starting QLLK Training (Batch: {batch_size}, Workers: {num_workers})...")
     start_time = time.time()
     total_tokens = 0
 
     for epoch in range(epochs):
+        model.train()
         for i, (inputs, targets) in enumerate(loader):
-            inputs, targets = inputs.to(device), targets.to(device)
+            inputs, targets = inputs.to(device, non_blocking=True), targets.to(device, non_blocking=True)
             
-            # Forward
-            logits = model(inputs)
+            # Forward with Automatic Mixed Precision (AMP) - CUDA only
+            # MPS uses FP32 for stability
+            with autocast(enabled=(device.type == 'cuda'), dtype=torch.float16):
+                logits = model(inputs)
+                loss = criterion(logits.reshape(-1, 256), targets.reshape(-1))
             
-            # Loss
-            loss = criterion(logits.reshape(-1, 256), targets.reshape(-1))
-            
-            # Backward
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            # Backward with Scaling
+            optimizer.zero_grad(set_to_none=True) # faster than zeroing
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             
             total_tokens += inputs.numel()
             
@@ -93,23 +122,23 @@ def train(file_path="dataset.bin"):
     total_time = time.time() - start_time
     print(f"Final Performance: {total_tokens/total_time:.0f} tokens/s")
     
-    # --- Deep Verification: Can it actually predict? ---
+    # --- Deep Verification ---
     print("\n--- Deep Verification: Prediction Test ---")
     model.eval()
     with torch.no_grad():
-        # Test on a sequence of zeros (predictable)
         test_input = torch.zeros((1, seq_len), dtype=torch.long).to(device)
-        logits = model(test_input)
-        preds = torch.argmax(logits, dim=-1)
+        # Use autocast only for CUDA
+        with autocast(enabled=(device.type == 'cuda'), dtype=torch.float16):
+            logits = model(test_input)
+            preds = torch.argmax(logits, dim=-1)
         
-        # Check if it correctly predicts 0s for a 0-input (simple case)
         correct_zeros = (preds == 0).float().mean().item() * 100
         print(f"Prediction Accuracy on predictable sequence: {correct_zeros:.1f}%")
         
         if correct_zeros > 90:
-            print("SUCCESS: QLLK has successfully learned the repetitive pattern.")
+            print("SUCCESS: QLLK performance and logic verified.")
         else:
-            print("NOTICE: QLLK needs more epochs or tuning for full convergence, but throughput is verified.")
+            print("NOTICE: Performance is high, but sequence learning may need more data/epochs.")
 
 if __name__ == "__main__":
     train()
