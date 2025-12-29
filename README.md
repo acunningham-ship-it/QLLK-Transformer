@@ -173,14 +173,14 @@ We welcome contributions! Areas for improvement:
 
 ## 📝 Citation
 
-If you use QLLK in your research, please cite:
+If you use QLLK in your research, feel free to cite us, you do not have to though.
 
 ```bibtex
 @software{qllk2024,
   title={QLLK: Quantum-Leap Latent Kernel Transformer},
-  author={antigravity},
-  year={2024},
-  url={https://github.com/yourusername/QLLK-Transformer}
+  author={AcHamm},
+  year={2025},
+  url={https://github.com/acunningham-ship-it/QLLK-Transformer}
 }
 ```
 
@@ -190,7 +190,8 @@ MIT License - See LICENSE file
 
 ## 🙏 Acknowledgments
 
-Created by **antigravity** - demonstrating that elegant solutions can outperform complex ones.
+Created by **AcHamm** - demonstrating that elegant solutions can outperform complex ones.
+(AI was used to help code this)
 
 ---
 
