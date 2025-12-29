@@ -148,7 +148,7 @@ class LinearLatentKernel(nn.Module):
 | Linformer | 2020 | O(N) | 10x | ~5% loss |
 | RWKV | 2021 | O(N) | 50x | ~10% loss |
 | Mamba | 2023 | O(N) | 100x | ~3% loss |
-| **QLLK** | **2024** | **O(N)** | **125x** | **~5% loss*** |
+| **QLLK** | **2025** | **O(N)** | **125x** | **~5% loss*** |
 
 *Estimated - needs more rigorous testing
 
